@@ -1441,3 +1441,143 @@ for timing_vals, timing_label, fname_suffix in [
     plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"saved: {out}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# processing time only: stacked bars showing mean and median days per queue
+# no volume bars — just the hatched days bars centered per quarter
+# ════════════════════════════════════════════════════════════════════════════
+
+for metric, pivot_days, metric_label, fname_suffix in [
+    ("mean",   pivot_avgdays, "Avg",    "mean"),
+    ("median", pivot_med2,    "Median", "median"),
+]:
+    fig = plt.figure(figsize=(22, 16))
+    fig.patch.set_facecolor("#F7F5F0")
+    gs_t = GS2(2, 1, figure=fig, height_ratios=[1.6, 1.0],
+               top=0.95, bottom=0.01, left=0.06, right=0.94, hspace=0.05)
+    ax_chart = fig.add_subplot(gs_t[0])
+    ax_table  = fig.add_subplot(gs_t[1])
+    ax_chart.set_facecolor("#FAFAF7")
+    ax_table.set_visible(False)
+
+    x = np.arange(n_quarters)
+    bar_width_t = 0.65   # full width since only one bar per quarter
+
+    bottoms = np.zeros(n_quarters)
+    for queue in target_queues:
+        vals = pivot_days[queue].values
+        ax_chart.bar(x, vals, bottom=bottoms, width=bar_width_t,
+                     color=queue_colors[queue], alpha=0.70,
+                     zorder=3, edgecolor="white", linewidth=0.4, hatch="///")
+        for xi, (v, b) in enumerate(zip(vals, bottoms)):
+            if v >= 0.6:
+                ax_chart.text(xi, b + v / 2, f"{v:.1f}",
+                              ha="center", va="center", fontsize=6,
+                              color="white", fontweight="bold")
+        bottoms += vals
+
+    max_days = bottoms.max()
+    ax_chart.set_ylim(0, max_days * 1.22)
+    ax_chart.set_ylabel(f"{metric_label} Business Days in Queue (stacked per step)", fontsize=10, color="#333")
+    ax_chart.spines[["top", "right"]].set_visible(False)
+    ax_chart.grid(axis="y", linestyle="--", alpha=0.3, zorder=0)
+
+    ax_chart.set_xticks(x)
+    ax_chart.set_xticklabels([q.replace(" ", "\n") for q in quarter_order], fontsize=8.5)
+
+    for yr in years:
+        idxs = [i for i, q in enumerate(quarter_order) if q.startswith(str(yr))]
+        if not idxs:
+            continue
+        ax_chart.text(np.mean(idxs), max_days * 1.14,
+                      str(yr) + (" *" if yr == 2026 else ""),
+                      ha="center", fontsize=11, fontweight="bold", color="#333")
+        if idxs[0] > 0:
+            ax_chart.axvline(idxs[0] - 0.5, color="#bbb", linewidth=1.0,
+                             linestyle="--", zorder=1)
+
+    hatch_h = [plt.Rectangle((0,0),1,1, color=queue_colors[q], alpha=0.70, hatch="///")
+               for q in target_queues]
+    ax_chart.legend(hatch_h, target_queues, title="Queue",
+                    fontsize=8.5, loc="upper left", framealpha=0.92, title_fontsize=9)
+    ax_chart.set_title(
+        f"Review Queue: {metric_label} Business Days per Step  |  2024 · 2025 · 2026",
+        fontsize=14, fontweight="bold", color="#1C1C1C", pad=14
+    )
+    ax_chart.annotate("* 2026 is a partial year  |  bars are stacked — total height = sum of per-queue days, not end-to-end grant duration",
+                      xy=(1.0, -0.09), xycoords="axes fraction",
+                      ha="right", fontsize=7.5, color="#888", style="italic")
+
+    # ── table ─────────────────────────────────────────────────────────────
+    annual_days = {}
+    for yr in years:
+        yr_qs = [q for q in quarter_order if q.startswith(str(yr))]
+        for queue in target_queues:
+            dv = pivot_days.loc[yr_qs, queue].values
+            valid = dv[dv > 0]
+            if metric == "mean":
+                annual_days[(yr, queue)] = round(float(valid.mean()), 1) if len(valid) else 0.0
+            else:
+                annual_days[(yr, queue)] = round(float(np.median(valid)), 1) if len(valid) else 0.0
+
+    col_headers = quarter_order + [f"{yr} Total" for yr in years]
+    row_labels  = [f"{q}  {metric_label} Days" for q in target_queues]
+
+    cell_text = []
+    for queue in target_queues:
+        row = []
+        for q in quarter_order:
+            d = pivot_days.loc[q, queue] if q in pivot_days.index else 0
+            row.append(f"{d:.1f}" if d > 0 else "—")
+        for yr in years:
+            v = annual_days[(yr, queue)]
+            row.append(f"{v:.1f}" if v > 0 else "—")
+        cell_text.append(row)
+
+    ax_table.set_visible(True)
+    ax_table.axis("off")
+
+    days_tint       = "#F5F5F0"
+    days_total_tint = "#E8E8E2"
+    row_colors = [
+        [days_tint] * len(quarter_order) + [days_total_tint] * len(years)
+        for _ in target_queues
+    ]
+
+    tbl = ax_table.table(
+        cellText=cell_text,
+        rowLabels=row_labels,
+        colLabels=col_headers,
+        cellColours=row_colors,
+        loc="center",
+        cellLoc="center",
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    tbl.scale(1, 1.85)
+
+    import matplotlib.colors as mcolors
+    for (r, c), cell in tbl.get_celld().items():
+        cell.set_linewidth(0.3)
+        cell.set_edgecolor("#ccc")
+        if r == 0:
+            cell.set_facecolor("#2C2C2C")
+            cell.set_text_props(color="white", fontweight="bold", fontsize=7)
+        if c == -1 and r >= 1:
+            queue_name = target_queues[r - 1]
+            base_rgb = mcolors.to_rgb(queue_colors[queue_name])
+            faded = tuple(ch * 0.55 + 0.45 for ch in base_rgb)
+            cell.set_facecolor(faded)
+            cell.set_text_props(color="white", fontweight="bold", fontsize=7.5)
+            cell.set_width(0.09)
+        if c >= len(quarter_order) and r > 0:
+            cell.set_text_props(fontweight="bold")
+
+    fig.text(0.99, 0.01, "* 2026 is a partial year",
+             ha="right", fontsize=8, color="#888", style="italic")
+
+    out = f"outputs/processing_time_only_{fname_suffix}.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close()
+    print(f"saved: {out}")
