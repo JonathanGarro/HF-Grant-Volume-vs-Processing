@@ -1,0 +1,11 @@
+[project]
+name = "2026-04-20-grant-processing-time-vs-volume"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "holidays>=0.95",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+]
