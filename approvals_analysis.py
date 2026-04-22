@@ -100,6 +100,7 @@ agg = (
         volume=("Record Name", "nunique"),
         median_days=("biz_days", "median"),
         mean_days=("biz_days", "mean"),
+        total_days=("biz_days", "sum"),
         p75_days=("biz_days", lambda x: x.quantile(0.75)),
         p90_days=("biz_days", lambda x: x.quantile(0.90)),
     )
@@ -1448,10 +1449,15 @@ for timing_vals, timing_label, fname_suffix in [
 # no volume bars — just the hatched days bars centered per quarter
 # ════════════════════════════════════════════════════════════════════════════
 
-for metric, pivot_days, metric_label, fname_suffix in [
+for metric, pivot_days_raw, metric_label, fname_suffix in [
     ("mean",   pivot_avgdays, "Avg",    "mean"),
     ("median", pivot_med2,    "Median", "median"),
 ]:
+    # for display: replace 0.0 with 0.1 so zero-median queues still show a sliver
+    # table values still use the raw pivot
+    pivot_days = pivot_days_raw.copy()
+    pivot_days = pivot_days.map(lambda v: 0.1 if v == 0.0 else v)
+
     fig = plt.figure(figsize=(22, 16))
     fig.patch.set_facecolor("#F7F5F0")
     gs_t = GS2(2, 1, figure=fig, height_ratios=[1.6, 1.0],
@@ -1522,28 +1528,86 @@ for metric, pivot_days, metric_label, fname_suffix in [
                 annual_days[(yr, queue)] = round(float(np.median(valid)), 1) if len(valid) else 0.0
 
     col_headers = quarter_order + [f"{yr} Total" for yr in years]
-    row_labels  = [f"{q}  {metric_label} Days" for q in target_queues]
+    row_labels = []
+    for queue in target_queues:
+        row_labels.append(f"{queue}  {metric_label} Days")
+        row_labels.append(f"{queue}  Total Days")
+    row_labels += [f"All Queues  {metric_label}", "All Queues  Total Days"]
+
+    # pivot total days (raw sum of biz_days) per queue per quarter
+    pivot_total_days = agg[agg["queue"].isin(target_queues)].pivot_table(
+        index="yq", columns="queue", values="total_days"
+    ).reindex(quarter_order).fillna(0)
+    for q in target_queues:
+        if q not in pivot_total_days.columns:
+            pivot_total_days[q] = 0
+    pivot_total_days = pivot_total_days[target_queues]
+
+    # annual total days per queue
+    annual_total_days = {}
+    for yr in years:
+        yr_qs = [q for q in quarter_order if q.startswith(str(yr))]
+        for queue in target_queues:
+            annual_total_days[(yr, queue)] = pivot_total_days.loc[yr_qs, queue].sum()
+
+    # annual stat days uses raw (not display) pivot
+    annual_days_raw = {}
+    for yr in years:
+        yr_qs = [q for q in quarter_order if q.startswith(str(yr))]
+        for queue in target_queues:
+            dv = pivot_days_raw.loc[yr_qs, queue].values
+            valid = dv[dv > 0]
+            if metric == "mean":
+                annual_days_raw[(yr, queue)] = round(float(valid.mean()), 1) if len(valid) else 0.0
+            else:
+                annual_days_raw[(yr, queue)] = round(float(np.median(valid)), 1) if len(valid) else 0.0
+
+    # grand column totals (sum across all queues per quarter)
+    col_totals_stat  = [0.0] * (len(quarter_order) + len(years))
+    col_totals_raw   = [0.0] * (len(quarter_order) + len(years))
 
     cell_text = []
     for queue in target_queues:
-        row = []
-        for q in quarter_order:
-            d = pivot_days.loc[q, queue] if q in pivot_days.index else 0
-            row.append(f"{d:.1f}" if d > 0 else "—")
-        for yr in years:
-            v = annual_days[(yr, queue)]
-            row.append(f"{v:.1f}" if v > 0 else "—")
-        cell_text.append(row)
+        stat_row  = []   # median or mean days
+        total_row = []   # raw total business days
+
+        for qi, q in enumerate(quarter_order):
+            d = pivot_days_raw.loc[q, queue] if q in pivot_days_raw.index else 0
+            t = pivot_total_days.loc[q, queue] if q in pivot_total_days.index else 0
+            stat_row.append(f"{d:.1f}" if d > 0 else "—")
+            total_row.append(f"{t:.0f}" if t > 0 else "—")
+            col_totals_stat[qi] += d if d > 0 else 0
+            col_totals_raw[qi]  += t if t > 0 else 0
+
+        for yi, yr in enumerate(years):
+            v = annual_days_raw[(yr, queue)]
+            t = annual_total_days[(yr, queue)]
+            stat_row.append(f"{v:.1f}" if v > 0 else "—")
+            total_row.append(f"{t:.0f}" if t > 0 else "—")
+            col_totals_stat[len(quarter_order) + yi] += v if v > 0 else 0
+            col_totals_raw[len(quarter_order) + yi]  += t if t > 0 else 0
+
+        cell_text.append(stat_row)
+        cell_text.append(total_row)
+
+    # grand total rows
+    cell_text.append([f"{t:.1f}" if t > 0 else "—" for t in col_totals_stat])
+    cell_text.append([f"{t:.0f}" if t > 0 else "—" for t in col_totals_raw])
 
     ax_table.set_visible(True)
     ax_table.axis("off")
 
     days_tint       = "#F5F5F0"
     days_total_tint = "#E8E8E2"
-    row_colors = [
-        [days_tint] * len(quarter_order) + [days_total_tint] * len(years)
-        for _ in target_queues
-    ]
+    raw_tint       = "#EEF0F5"   # slightly different for raw total rows
+    raw_total_tint = "#DDE0EA"
+    row_colors = []
+    for queue in target_queues:
+        row_colors.append([days_tint]  * len(quarter_order) + [days_total_tint]  * len(years))
+        row_colors.append([raw_tint]   * len(quarter_order) + [raw_total_tint]   * len(years))
+    # grand total rows
+    row_colors.append(["#D0D8E4"] * len(quarter_order) + ["#B8C4D4"] * len(years))
+    row_colors.append(["#BFC9D8"] * len(quarter_order) + ["#A8B8CC"] * len(years))
 
     tbl = ax_table.table(
         cellText=cell_text,
@@ -1565,14 +1629,31 @@ for metric, pivot_days, metric_label, fname_suffix in [
             cell.set_facecolor("#2C2C2C")
             cell.set_text_props(color="white", fontweight="bold", fontsize=7)
         if c == -1 and r >= 1:
-            queue_name = target_queues[r - 1]
-            base_rgb = mcolors.to_rgb(queue_colors[queue_name])
-            faded = tuple(ch * 0.55 + 0.45 for ch in base_rgb)
-            cell.set_facecolor(faded)
-            cell.set_text_props(color="white", fontweight="bold", fontsize=7.5)
-            cell.set_width(0.09)
+            n_data_rows = len(target_queues) * 2
+            if r <= n_data_rows:
+                queue_idx  = (r - 1) // 2
+                is_raw_row = (r - 1) % 2 == 1
+                queue_name = target_queues[queue_idx]
+                base_rgb   = mcolors.to_rgb(queue_colors[queue_name])
+                if is_raw_row:
+                    faded = tuple(ch * 0.40 + 0.60 for ch in base_rgb)
+                    cell.set_text_props(color="white", fontweight="normal",
+                                        fontsize=7, style="italic")
+                else:
+                    faded = tuple(ch * 0.55 + 0.45 for ch in base_rgb)
+                    cell.set_text_props(color="white", fontweight="bold", fontsize=7.5)
+                cell.set_facecolor(faded)
+                cell.set_width(0.10)
+            else:
+                cell.set_facecolor("#2C2C2C")
+                cell.set_text_props(color="white", fontweight="bold", fontsize=7.5)
+                cell.set_width(0.10)
         if c >= len(quarter_order) and r > 0:
             cell.set_text_props(fontweight="bold")
+        # grand total rows — bold data cells
+        n_data_rows = len(target_queues) * 2
+        if r > n_data_rows and c >= 0:
+            cell.set_text_props(fontweight="bold", fontsize=8)
 
     fig.text(0.99, 0.01, "* 2026 is a partial year",
              ha="right", fontsize=8, color="#888", style="italic")
